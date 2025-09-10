@@ -35,7 +35,7 @@ def createBarcode(text: str, type: str):
         case _:
             return createDatamatrix(text)
 
-def createLabelImage(labelSize : tuple, printableSize : tuple, text : str, textFont : ImageFont, textMaxLines : int, barcode : Image, dueDate : str, dueDateFont : ImageFont):
+def createLabelImage(labelSize : tuple, printableSize : tuple, text : str, textFont : ImageFont, textMaxLines : int, barcode : Image, best_before_date : str, purchased_date : str, amount : str, unit_name : str, dueDateFont : ImageFont):
     is_endless = labelSize[1] == 0
     
     if is_endless:
@@ -56,12 +56,32 @@ def createLabelImage(labelSize : tuple, printableSize : tuple, text : str, textF
         # Now calculate width with the scaled barcode
         (nameText, nameTextWidth) = wrapText(text, textFont, 1000, textMaxLines)  # use large max width for initial calculation
         
-        # Calculate width based on whichever is longer: product text or due date
+        # Create date display string
+        date_display = ""
+        if purchased_date and best_before_date:
+            date_display = f"{purchased_date} - {best_before_date}"
+        elif best_before_date:
+            date_display = best_before_date
+        elif purchased_date:
+            date_display = purchased_date
+            
+        # Create amount display string
+        amount_display = ""
+        if amount and unit_name:
+            amount_display = f"{amount} {unit_name}"
+        elif amount:
+            amount_display = amount
+        
+        # Calculate width based on whichever is longer: product text, date, or amount
         text_width_needed = nameTextWidth
         
-        if dueDate:
-            (_, _, ddRight, _) = dueDateFont.getbbox(dueDate)
-            text_width_needed = max(nameTextWidth, ddRight)  # use the longer of the two
+        if date_display:
+            (_, _, ddRight, _) = dueDateFont.getbbox(date_display)
+            text_width_needed = max(text_width_needed, ddRight)
+            
+        if amount_display:
+            (_, _, amountRight, _) = dueDateFont.getbbox(amount_display)
+            text_width_needed = max(text_width_needed, amountRight)
         
         barcode_text_gap = textFont.size // 2  # gap is half the text height
         width = int(barcode.size[0] + barcode_text_gap + text_width_needed)
@@ -69,7 +89,7 @@ def createLabelImage(labelSize : tuple, printableSize : tuple, text : str, textF
         # ensure reasonable minimum width but not excessive  
         width = max(width, barcode.size[0] + int(height * 0.4))  # use 40% of height as minimum text space
         
-        print(f"Calculated width: {width} (barcode: {barcode.size[0]}, text: {nameTextWidth}, due_date: {dueDate})")
+        print(f"Calculated width: {width} (barcode: {barcode.size[0]}, text: {nameTextWidth}, dates: {date_display}, amount: {amount_display})")
         print(f"Label dimensions - Total: {labelSize}, Printable: {printableSize}")
         print(f"Using height: {height}, width: {width}")
 
@@ -104,14 +124,22 @@ def createLabelImage(labelSize : tuple, printableSize : tuple, text : str, textF
         text_x = barcode.size[0] + barcode_text_gap  # add gap between barcode and text
         text_align = "left"
         
-        # Center text vertically if no due date
-        if not dueDate:
-            # Get precise text height using bounding box
+        # Adjust text position based on what's displayed
+        if amount_display and not date_display:
+            # Amount at top, center text vertically in remaining space
+            amount_height = dueDateFont.size
+            available_height = height - amount_height
+            _, text_top, _, text_bottom = textFont.getbbox(nameText)
+            actual_text_height = text_bottom - text_top
+            text_y = amount_height + (available_height - actual_text_height) // 2 - text_top
+        elif not date_display and not amount_display:
+            # No date or amount, center text vertically
             _, text_top, _, text_bottom = textFont.getbbox(nameText)
             actual_text_height = text_bottom - text_top
             text_y = (height - actual_text_height) // 2 - text_top
         else:
-            text_y = 0  # top position when due date is present
+            # Date present, keep text at top with space for amount if present
+            text_y = dueDateFont.size if amount_display else 0
     else:
         # Wrap text and center it for fixed labels
         nameText, nameTextWidth = wrapText(text, textFont, width - barcode.size[0], textMaxLines)
@@ -130,14 +158,35 @@ def createLabelImage(labelSize : tuple, printableSize : tuple, text : str, textF
         spacing = lineSpacing
     )
 
-    if dueDate:
-        (_, _, ddRight, ddBottom) = dueDateFont.getbbox(dueDate)
+    # Display amount in top right if available
+    if amount_display:
+        (_, _, amountRight, _) = dueDateFont.getbbox(amount_display)
         
-        # Position due date based on label type
         if is_endless:
-            # For endless labels, align due date with text
+            # For endless labels, position in top right corner
+            amount_x = label.size[0] - amountRight
+            amount_y = 0
+        else:
+            # For fixed labels, position in top right corner
+            amount_x = label.size[0] - amountRight
+            amount_y = 0
+            
+        draw.text(
+            [amount_x, amount_y],
+            amount_display,
+            fill = ImageColor.getrgb("#000"),
+            font = dueDateFont
+        )
+
+    # Display date information if available
+    if date_display:
+        (_, _, ddRight, ddBottom) = dueDateFont.getbbox(date_display)
+        
+        # Position date based on label type
+        if is_endless:
+            # For endless labels, align date with text
             if ddRight > nameTextWidth:
-                due_date_x = text_x  # Due date is longer - position normally
+                due_date_x = text_x  # Date is longer - position normally
             else:
                 due_date_x = text_x + nameTextWidth - ddRight  # Align right edge with text end
             due_date_y = label.size[1] - ddBottom  # bottom position with no margin
@@ -148,7 +197,7 @@ def createLabelImage(labelSize : tuple, printableSize : tuple, text : str, textF
             
         draw.text(
             [due_date_x, due_date_y],
-            dueDate,
+            date_display,
             fill = ImageColor.getrgb("#000"),
             font = dueDateFont
         )
