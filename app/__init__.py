@@ -37,20 +37,28 @@ def home_route():
     return "Label %s, %s"%(label_spec.identifier, label_spec.name)
 
 def get_params():
-    source = request.form if request.method == "POST" else request.args
+    # Handle different data sources: JSON, form data, or query params
+    if request.method == "POST":
+        if request.is_json:
+            source = request.get_json()
+        else:
+            source = request.form
+    else:
+        source = request.args
 
     name = ""
+    # Check for different name fields
     if 'product' in source:
         name = source['product']
-    if 'battery' in request.form:
+    elif 'battery' in source:
         name = source['battery']
-    if 'chore' in request.form:
+    elif 'chore' in source:
         name = source['chore']
-    if 'recipe' in request.form:
+    elif 'recipe' in source:
         name = source['recipe']
     
-    barcode = source['grocycode'] if 'grocycode' in source else ''
-    dueDate = source['due_date'] if 'due_date' in source else ''
+    barcode = source.get('grocycode', '')
+    dueDate = source.get('due_date', '')
 
     return (name, barcode, dueDate)
 
@@ -58,7 +66,7 @@ def get_params():
 def print_route():
     (name, barcode, dueDate) = get_params();
 
-    label = createLabelImage(label_spec.dots_printable, ENDLESS_MARGIN, name, nameFont, NAME_FONT_SIZE, NAME_MAX_LINES, createBarcode(barcode, BARCODE_FORMAT), dueDate, ddFont)
+    label = createLabelImage(label_spec.dots_total, label_spec.dots_printable, name, nameFont, NAME_MAX_LINES, createBarcode(barcode, BARCODE_FORMAT), dueDate, ddFont)
 
     buf = BytesIO()
     label.save(buf, format="PNG")
@@ -71,7 +79,7 @@ def print_route():
 def test():
     (name, barcode, dueDate) = get_params();
 
-    img = createLabelImage(label_spec.dots_printable, ENDLESS_MARGIN, name, nameFont, NAME_FONT_SIZE, NAME_MAX_LINES, createBarcode(barcode, BARCODE_FORMAT), dueDate, ddFont)
+    img = createLabelImage(label_spec.dots_total, label_spec.dots_printable, name, nameFont, NAME_MAX_LINES, createBarcode(barcode, BARCODE_FORMAT), dueDate, ddFont)
     
     buf = BytesIO()
     img.save(buf, format="PNG")
@@ -81,6 +89,7 @@ def test():
 
 def sendToPrinter(image : Image):
     bql = BrotherQLRaster(PRINTER_MODEL)
+    bql.dpi_600 = True  # Enable high resolution mode
 
     redLabel = label_spec.color == Color.BLACK_RED_WHITE
 

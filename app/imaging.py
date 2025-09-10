@@ -3,12 +3,32 @@ import qrcode
 from PIL import Image, ImageColor, ImageFont, ImageDraw
 
 def createDatamatrix(text: str):
-    encoded = encode(text.encode('utf8'), "Ascii", "ShapeAuto")
-    barcode = Image.frombytes('RGB', (encoded.width, encoded.height), encoded.pixels)
-    return barcode
+    try:
+        # Try with automatic shape selection first
+        encoded = encode(text.encode('utf8'), "Ascii", "ShapeAuto")
+        barcode = Image.frombytes('RGB', (encoded.width, encoded.height), encoded.pixels)
+        return barcode
+    except Exception:
+        # If that fails, try with a larger fixed size
+        try:
+            encoded = encode(text.encode('utf8'), "Ascii", "RectAuto")  
+            barcode = Image.frombytes('RGB', (encoded.width, encoded.height), encoded.pixels)
+            return barcode
+        except Exception:
+            # If data matrix fails, fall back to QR code which is more flexible
+            return createQRCode(text)
 
 def createQRCode(text: str):
-    return qrcode.make(text, box_size = 1)
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+        box_size=1,
+        border=0  # Remove white border
+    )
+    qr.add_data(text)
+    qr.make(fit=True)
+    qr_image = qr.make_image(fill_color="black", back_color="white")
+    return qr_image
 
 def createBarcode(text: str, type: str):
     match type:
@@ -19,21 +39,25 @@ def createBarcode(text: str, type: str):
         case _:
             return createDatamatrix(text)
 
-def createLabelImage(labelSize : tuple, endlessMargin : int, text : str, textFont : ImageFont, textFontSize : int, textMaxLines : int, barcode : Image, dueDate : str, dueDateFont : ImageFont):
-    # For endless labels, swap dimensions to use the longer side
-    if labelSize[1] == 0:  # endless label
-        (height, width) = labelSize  # height becomes the fixed dimension (12mm), width becomes endless
+def createLabelImage(labelSize : tuple, printableSize : tuple, text : str, textFont : ImageFont, textMaxLines : int, barcode : Image, dueDate : str, dueDateFont : ImageFont):
+    is_endless = labelSize[1] == 0
+    
+    if is_endless:
+        (height, width) = labelSize  # swap for endless: height=fixed, width=endless
     else:
         (width, height) = labelSize
-    # default line spacing used by multiline_text, doesn't seem to have an effect if changed though but we need to take into account
+        
     lineSpacing = 4
-    # margin to use for label
-    marginTop = 0
-    marginBottom = 0
 
     # for endless labels with a width of zero (after dimension swap)
     if width == 0:
-        # width should be barcode width + text width + margins
+        # Scale barcode to fill the full height for endless labels
+        scale_factor = height / barcode.size[1]
+        new_barcode_width = int(barcode.size[0] * scale_factor)
+        new_barcode_height = int(barcode.size[1] * scale_factor)
+        barcode = barcode.resize((new_barcode_width, new_barcode_height), Image.Resampling.NEAREST)
+        
+        # Now calculate width with the scaled barcode
         (nameText, nameTextWidth) = wrapText(text, textFont, 1000, textMaxLines)  # use large max width for initial calculation
         
         # Calculate width based on whichever is longer: product text or due date
@@ -43,78 +67,85 @@ def createLabelImage(labelSize : tuple, endlessMargin : int, text : str, textFon
             (_, _, ddRight, _) = dueDateFont.getbbox(dueDate)
             text_width_needed = max(nameTextWidth, ddRight)  # use the longer of the two
         
-        width = int(barcode.size[0] + text_width_needed + endlessMargin)  # minimal margins
+        width = int(barcode.size[0] + text_width_needed)  # no margins, use full space
         
-        # ensure reasonable minimum width but not excessive
-        width = max(width, barcode.size[0] + 50)
+        # ensure reasonable minimum width but not excessive  
+        width = max(width, barcode.size[0] + int(height * 0.4))  # use 40% of height as minimum text space
         
         print(f"Calculated width: {width} (barcode: {barcode.size[0]}, text: {nameTextWidth}, due_date: {dueDate})")
-        
-        marginTop = endlessMargin
-        marginBottom = endlessMargin
+        print(f"Label dimensions - Total: {labelSize}, Printable: {printableSize}")
+        print(f"Using height: {height}, width: {width}")
 
-    # increase the size of the barcode if space permits
-    # ensure barcode doesn't exceed label width and height is reasonable
-    max_barcode_width = min(width // 2, 200)  # limit barcode to half label width or 200px max
-    if height > 50 and barcode.size[0] <= max_barcode_width:
-        if (barcode.size[1] * 8) < height and (barcode.size[0] * 8) <= max_barcode_width:
-            barcode = barcode.resize((barcode.size[0] * 8, barcode.size[1] * 8), Image.Resampling.NEAREST)
-        elif (barcode.size[1] * 6) < height and (barcode.size[0] * 6) <= max_barcode_width:
-            barcode = barcode.resize((barcode.size[0] * 6, barcode.size[1] * 6), Image.Resampling.NEAREST)
-        elif (barcode.size[1] * 4) < height and (barcode.size[0] * 4) <= max_barcode_width:
-            barcode = barcode.resize((barcode.size[0] * 4, barcode.size[1] * 4), Image.Resampling.NEAREST)
-        elif (barcode.size[1] * 2) < height and (barcode.size[0] * 2) <= max_barcode_width:
-            barcode = barcode.resize((barcode.size[0] * 2, barcode.size[1] * 2), Image.Resampling.NEAREST)
+    # For fixed labels, keep original scaling logic
+    if not is_endless:
+        effective_height = height
+        max_barcode_width = width // 2  # allow barcode to use up to half the width
+        if effective_height > (height * 0.4) and barcode.size[0] <= max_barcode_width:  # require at least 40% of height
+            if (barcode.size[1] * 8) < effective_height and (barcode.size[0] * 8) <= max_barcode_width:
+                barcode = barcode.resize((barcode.size[0] * 8, barcode.size[1] * 8), Image.Resampling.NEAREST)
+            elif (barcode.size[1] * 6) < effective_height and (barcode.size[0] * 6) <= max_barcode_width:
+                barcode = barcode.resize((barcode.size[0] * 6, barcode.size[1] * 6), Image.Resampling.NEAREST)
+            elif (barcode.size[1] * 4) < effective_height and (barcode.size[0] * 4) <= max_barcode_width:
+                barcode = barcode.resize((barcode.size[0] * 4, barcode.size[1] * 4), Image.Resampling.NEAREST)
+            elif (barcode.size[1] * 2) < effective_height and (barcode.size[0] * 2) <= max_barcode_width:
+                barcode = barcode.resize((barcode.size[0] * 2, barcode.size[1] * 2), Image.Resampling.NEAREST)
     
     label = Image.new("RGB", (width, height), ImageColor.getrgb("#FFF"))
-    # vertically align barcode (ignoring margin)
-    barcode_padding = [0, (int)((label.size[1] / 2) - (barcode.size[1] / 2))]
+    # position barcode at top with no margins for endless, centered for fixed
+    barcode_y = 0 if is_endless else (height - barcode.size[1]) // 2
+    barcode_padding = [0, barcode_y]
     label.paste(barcode, barcode_padding)
     
     draw = ImageDraw.Draw(label)
 
-    # For endless labels, calculate text width without constraints first
-    if labelSize[1] == 0:  # endless label
+    # Calculate text layout based on label type
+    if is_endless:
         # Get the natural width of the text without wrapping
         natural_text_width = textFont.getlength(text)
-        (nameText, nameTextWidth) = (text, natural_text_width)  # use text as-is for endless labels
+        nameText, nameTextWidth = text, natural_text_width
+        text_x = barcode.size[0]  # no gap, use full space
+        text_align = "left"
+        
+        # Center text vertically if no due date
+        if not dueDate:
+            # Center text with slight upward adjustment for better visual balance
+            estimated_text_height = textFont.size  # approximate height
+            text_y = (height - estimated_text_height) // 2 - int(estimated_text_height * 0.2)
+        else:
+            text_y = 0  # top position when due date is present
     else:
-        (nameText, nameTextWidth) = wrapText(text, textFont, width - barcode.size[0], textMaxLines)
-    
-    # For endless labels, place text with minimal spacing after barcode
-    if labelSize[1] == 0:  # endless label
-        text_x = barcode.size[0] + 5  # minimal 5px gap
-    else:
-        # Original layout with centered text for fixed labels
+        # Wrap text and center it for fixed labels
+        nameText, nameTextWidth = wrapText(text, textFont, width - barcode.size[0], textMaxLines)
         nameMaxWidth = width - barcode.size[0]
         nameLeftMargin = (nameMaxWidth - nameTextWidth) / 2
         text_x = barcode.size[0] + nameLeftMargin
+        text_align = "center"
+        text_y = 0  # fixed labels keep original positioning
 
     draw.multiline_text(
-        [text_x, marginTop],
+        [text_x, text_y],
         nameText,
         fill = ImageColor.getrgb("#000"),
         font = textFont,
-        align = "left" if labelSize[1] == 0 else "center",
+        align = text_align,
         spacing = lineSpacing
     )
 
     if dueDate:
         (_, _, ddRight, ddBottom) = dueDateFont.getbbox(dueDate)
         
-        # For endless labels, place due date below text 
-        if labelSize[1] == 0:  # endless label
+        # Position due date based on label type
+        if is_endless:
+            # For endless labels, align due date with text
             if ddRight > nameTextWidth:
-                # Due date is longer - position it normally from text_x
-                due_date_x = text_x
+                due_date_x = text_x  # Due date is longer - position normally
             else:
-                # Product text is longer - align due date right edge with text end
-                due_date_x = text_x + nameTextWidth - ddRight
-            due_date_y = label.size[1] - ddBottom - marginBottom  # bottom position as before
+                due_date_x = text_x + nameTextWidth - ddRight  # Align right edge with text end
+            due_date_y = label.size[1] - ddBottom  # bottom position with no margin
         else:
-            # Original layout - bottom right corner for fixed labels
+            # For fixed labels, position in bottom right corner
             due_date_x = label.size[0] - ddRight
-            due_date_y = label.size[1] - ddBottom - marginBottom
+            due_date_y = label.size[1] - ddBottom
             
         draw.text(
             [due_date_x, due_date_y],
@@ -124,16 +155,18 @@ def createLabelImage(labelSize : tuple, endlessMargin : int, text : str, textFon
         )
 
     # For endless labels, rotate the image to match printer orientation
-    if labelSize[1] == 0:  # endless label
+    if is_endless:
         label = label.rotate(-90, expand=True)
     
     return label
 
 def wrapText(text : str, font : ImageFont, maxWidth : int, maxLines : int):
     # safety check for extremely narrow labels
-    if maxWidth < 20:
+    min_reasonable_width = font.getlength("A") * 3  # at least 3 characters wide
+    if maxWidth < min_reasonable_width:
         # for very narrow labels, just truncate the text
-        truncated = text[:5] + "..." if len(text) > 5 else text
+        max_chars = max(1, int(maxWidth / font.getlength("A")))
+        truncated = text[:max_chars] + ("..." if len(text) > max_chars else "")
         return (truncated, font.getlength(truncated))
     
     parts = text.split(" ")
@@ -147,7 +180,7 @@ def wrapText(text : str, font : ImageFont, maxWidth : int, maxLines : int):
         if font.getlength(part) >= maxWidth:
             # prevent infinite loop by ensuring we can fit at least one character
             min_char_width = font.getlength("A")
-            if maxWidth < min_char_width * 2:
+            if maxWidth < min_char_width * 1.5:  # need at least 1.5 character widths
                 # too narrow, just use first character
                 trimmedParts.append(part[0] if part else "")
             else:
