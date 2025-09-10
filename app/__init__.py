@@ -72,6 +72,7 @@ def test():
     (name, barcode, dueDate) = get_params();
 
     img = createLabelImage(label_spec.dots_printable, ENDLESS_MARGIN, name, nameFont, NAME_FONT_SIZE, NAME_MAX_LINES, createBarcode(barcode, BARCODE_FORMAT), dueDate, ddFont)
+    
     buf = BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
