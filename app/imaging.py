@@ -1,22 +1,18 @@
-from pylibdmtx.pylibdmtx import encode
+import treepoem
 import qrcode
 from PIL import Image, ImageColor, ImageFont, ImageDraw
 
 def createDatamatrix(text: str):
     try:
-        # Try with automatic shape selection first
-        encoded = encode(text.encode('utf8'), "Ascii", "ShapeAuto")
-        barcode = Image.frombytes('RGB', (encoded.width, encoded.height), encoded.pixels)
-        return barcode
+        # Use treepoem for Data Matrix generation
+        barcode = treepoem.generate_barcode(
+            barcode_type='datamatrix',
+            data=text
+        )
+        return barcode.convert('RGB')
     except Exception:
-        # If that fails, try with a larger fixed size
-        try:
-            encoded = encode(text.encode('utf8'), "Ascii", "RectAuto")  
-            barcode = Image.frombytes('RGB', (encoded.width, encoded.height), encoded.pixels)
-            return barcode
-        except Exception:
-            # If data matrix fails, fall back to QR code which is more flexible
-            return createQRCode(text)
+        # If data matrix fails, fall back to QR code which is more flexible
+        return createQRCode(text)
 
 def createQRCode(text: str):
     qr = qrcode.QRCode(
@@ -67,7 +63,8 @@ def createLabelImage(labelSize : tuple, printableSize : tuple, text : str, textF
             (_, _, ddRight, _) = dueDateFont.getbbox(dueDate)
             text_width_needed = max(nameTextWidth, ddRight)  # use the longer of the two
         
-        width = int(barcode.size[0] + text_width_needed)  # no margins, use full space
+        barcode_text_gap = textFont.size // 2  # gap is half the text height
+        width = int(barcode.size[0] + barcode_text_gap + text_width_needed)
         
         # ensure reasonable minimum width but not excessive  
         width = max(width, barcode.size[0] + int(height * 0.4))  # use 40% of height as minimum text space
@@ -103,14 +100,16 @@ def createLabelImage(labelSize : tuple, printableSize : tuple, text : str, textF
         # Get the natural width of the text without wrapping
         natural_text_width = textFont.getlength(text)
         nameText, nameTextWidth = text, natural_text_width
-        text_x = barcode.size[0]  # no gap, use full space
+        barcode_text_gap = textFont.size // 2  # gap is half the text height
+        text_x = barcode.size[0] + barcode_text_gap  # add gap between barcode and text
         text_align = "left"
         
         # Center text vertically if no due date
         if not dueDate:
-            # Center text with slight upward adjustment for better visual balance
-            estimated_text_height = textFont.size  # approximate height
-            text_y = (height - estimated_text_height) // 2 - int(estimated_text_height * 0.2)
+            # Get precise text height using bounding box
+            _, text_top, _, text_bottom = textFont.getbbox(nameText)
+            actual_text_height = text_bottom - text_top
+            text_y = (height - actual_text_height) // 2 - text_top
         else:
             text_y = 0  # top position when due date is present
     else:
