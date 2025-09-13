@@ -2,14 +2,27 @@ from io import BytesIO
 from os import path, getenv
 import logging
 from flask import Flask, Response, request
-from PIL import Image, ImageFont
+from PIL import ImageFont
 from dotenv import load_dotenv
 from brother_ql.labels import ALL_LABELS, Color
 from brother_ql import BrotherQLRaster, create_label
 from brother_ql.backends import guess_backend, backend_factory
-from app.imaging import createBarcode, createLabelImage
+from app.imaging import create_barcode, create_label_image
 
 load_dotenv()
+
+class Config:
+    """Application configuration."""
+    LABEL_SIZE = getenv("LABEL_SIZE", "62x29")
+    PRINTER_MODEL = getenv("PRINTER_MODEL", "QL-500")
+    PRINTER_PATH = getenv("PRINTER_PATH", "file:///dev/usb/lp1")
+    PRINTER_600DPI = getenv("PRINTER_600DPI", "true").lower() == "true"
+    BARCODE_FORMAT = getenv("BARCODE_FORMAT", "Datamatrix")
+    NAME_FONT = getenv("NAME_FONT", "NotoSerif-Regular.ttf")
+    NAME_FONT_SIZE = int(getenv("NAME_FONT_SIZE", "48"))
+    NAME_MAX_LINES = int(getenv("NAME_MAX_LINES", "4"))
+    DUE_DATE_FONT = getenv("DUE_DATE_FONT", getenv("NAME_FONT", "NotoSerif-Regular.ttf"))
+    DUE_DATE_FONT_SIZE = int(getenv("DUE_DATE_FONT_SIZE", "30"))
 
 # Configure logging
 logging.basicConfig(
@@ -17,25 +30,15 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
-LABEL_SIZE = getenv("LABEL_SIZE", "62x29")
-PRINTER_MODEL = getenv("PRINTER_MODEL", "QL-500")
-PRINTER_PATH = getenv("PRINTER_PATH", "file:///dev/usb/lp1")
-BARCODE_FORMAT = getenv("BARCODE_FORMAT", "Datamatrix")
-NAME_FONT = getenv("NAME_FONT", "NotoSerif-Regular.ttf")
-NAME_FONT_SIZE = int(getenv("NAME_FONT_SIZE", "48"))
-NAME_MAX_LINES = int(getenv("NAME_MAX_LINES", "4"))
-DUE_DATE_FONT =  getenv("NAME_FONT", "NotoSerif-Regular.ttf")
-DUE_DATE_FONT_SIZE = int(getenv("DUE_DATE_FONT_SIZE", "30"))
-ENDLESS_MARGIN = int(getenv("ENDLESS_MARGIN", "10"))
-
-selected_backend = guess_backend(PRINTER_PATH)
+# Initialize printer configuration
+selected_backend = guess_backend(Config.PRINTER_PATH)
 BACKEND_CLASS = backend_factory(selected_backend)['backend_class']
+label_spec = next(x for x in ALL_LABELS if x.identifier == Config.LABEL_SIZE)
 
-label_spec = next(x for x in ALL_LABELS if x.identifier == LABEL_SIZE)
-
+# Load fonts
 thisDir = path.dirname(path.abspath(__file__))
-nameFont = ImageFont.truetype(path.join(thisDir, "..", "fonts", NAME_FONT), NAME_FONT_SIZE)
-ddFont = ImageFont.truetype(path.join(thisDir, "..", "fonts", DUE_DATE_FONT), DUE_DATE_FONT_SIZE)
+nameFont = ImageFont.truetype(path.join(thisDir, "..", "fonts", Config.NAME_FONT), Config.NAME_FONT_SIZE)
+ddFont = ImageFont.truetype(path.join(thisDir, "..", "fonts", Config.DUE_DATE_FONT), Config.DUE_DATE_FONT_SIZE)
 
 app = Flask(__name__)
 
@@ -51,102 +54,101 @@ def home_route():
     return "Label %s, %s"%(label_spec.identifier, label_spec.name)
 
 def get_params():
-    # Handle different data sources: JSON, form data, or query params
-    if request.method == "POST":
-        if request.is_json:
-            source = request.get_json()
-            logging.debug(f"HTTP {request.method} request - JSON data: {source}")
-        else:
-            source = request.form
-            logging.debug(f"HTTP {request.method} request - Form data: {dict(source)}")
+    """Extract and validate parameters from request."""
+    # Handle different data sources
+    if request.method == "POST" and request.is_json:
+        source = request.get_json()
+        logging.debug(f"POST JSON request - Data: {source}")
+    elif request.method == "POST":
+        source = request.form
+        logging.debug(f"POST form request - Data: {dict(source)}")
     else:
         source = request.args
-        logging.debug(f"HTTP {request.method} request - Query params: {dict(source)}")
+        logging.debug(f"GET request - Query params: {dict(source)}")
 
-    name = ""
-    # Check for different name fields
-    if 'product' in source:
-        name = source['product']
-    elif 'battery' in source:
-        name = source['battery']
-    elif 'chore' in source:
-        name = source['chore']
-    elif 'recipe' in source:
-        name = source['recipe']
+    # Extract name from various fields
+    name_fields = ['product', 'battery', 'chore', 'recipe']
+    name = next((source.get(field, '') for field in name_fields if source.get(field)), '')
     
     barcode = source.get('grocycode', '')
     
-    # Extract stock entry data (at top level)
-    stock_entry = source.get('stock_entry', {}) if isinstance(source.get('stock_entry'), dict) else {}
-    best_before_date = str(stock_entry.get('best_before_date', '')) if stock_entry.get('best_before_date') else ''
-    purchased_date = str(stock_entry.get('purchased_date', '')) if stock_entry.get('purchased_date') else ''
-    amount = str(stock_entry.get('amount', '')) if stock_entry.get('amount') else ''
+    # Extract stock entry data
+    stock_entry = source.get('stock_entry') or {}
+    if not isinstance(stock_entry, dict):
+        stock_entry = {}
     
-    # Extract quantity unit stock data (check both top level and under details)
-    quantity_unit_stock = {}
-    if 'quantity_unit_stock' in source and isinstance(source['quantity_unit_stock'], dict):
-        quantity_unit_stock = source['quantity_unit_stock']
-    elif 'details' in source and isinstance(source['details'], dict) and 'quantity_unit_stock' in source['details']:
-        quantity_unit_stock = source['details']['quantity_unit_stock']
+    dates = {
+        'best_before_date': str(stock_entry.get('best_before_date', '')) if stock_entry.get('best_before_date') else '',
+        'purchased_date': str(stock_entry.get('purchased_date', '')) if stock_entry.get('purchased_date') else '',
+        'amount': str(stock_entry.get('amount', '')) if stock_entry.get('amount') else ''
+    }
     
-    # Choose singular or plural unit name based on amount
-    unit_name = ''
-    if quantity_unit_stock.get('name'):
-        try:
-            amount_float = float(amount) if amount else 0
-            if amount_float > 1 and quantity_unit_stock.get('name_plural'):
-                unit_name = str(quantity_unit_stock.get('name_plural'))
-            else:
-                unit_name = str(quantity_unit_stock.get('name'))
-        except (ValueError, TypeError):
-            unit_name = str(quantity_unit_stock.get('name', ''))
+    # Extract unit info
+    quantity_unit_stock = (
+        source.get('quantity_unit_stock') if isinstance(source.get('quantity_unit_stock'), dict)
+        else source.get('details', {}).get('quantity_unit_stock', {})
+    )
+    
+    unit_name = _get_unit_name(quantity_unit_stock, dates['amount'])
+    
+    logging.debug(f"Extracted - name: '{name}', barcode: '{barcode}', dates: {dates}, unit: '{unit_name}'")
+    return (name, barcode, dates['best_before_date'], dates['purchased_date'], dates['amount'], unit_name)
 
-    logging.debug(f"Extracted parameters - name: '{name}', barcode: '{barcode}', best_before_date: '{best_before_date}', purchased_date: '{purchased_date}', amount: '{amount}', unit: '{unit_name}'")
-
-    return (name, barcode, best_before_date, purchased_date, amount, unit_name)
+def _get_unit_name(quantity_unit_stock, amount):
+    """Get appropriate unit name (singular/plural)."""
+    if not quantity_unit_stock.get('name'):
+        return ''
+    
+    try:
+        amount_float = float(amount) if amount else 0
+        if amount_float > 1 and quantity_unit_stock.get('name_plural'):
+            return str(quantity_unit_stock['name_plural'])
+        return str(quantity_unit_stock['name'])
+    except (ValueError, TypeError):
+        return str(quantity_unit_stock.get('name', ''))
 
 @app.route("/print", methods=["GET", "POST"])
 def print_route():
-    logging.debug(f"Print endpoint accessed: {request.method} {request.url}")
-    (name, barcode, best_before_date, purchased_date, amount, unit_name) = get_params();
-
-    label = createLabelImage(label_spec.dots_total, label_spec.dots_printable, name, nameFont, NAME_MAX_LINES, createBarcode(barcode, BARCODE_FORMAT), best_before_date, purchased_date, amount, unit_name, ddFont)
-
-    buf = BytesIO()
-    label.save(buf, format="PNG")
-    buf.seek(0)
+    """Generate and print a label."""
+    logging.debug(f"Print endpoint: {request.method} {request.url}")
+    params = get_params()
+    label = _create_label(*params)
     sendToPrinter(label)
-
     logging.debug("Label sent to printer successfully")
     return Response("OK", 200)
 
 @app.route("/image")
-def test():
-    logging.debug(f"Image endpoint accessed: {request.method} {request.url}")
-    (name, barcode, best_before_date, purchased_date, amount, unit_name) = get_params();
-
-    img = createLabelImage(label_spec.dots_total, label_spec.dots_printable, name, nameFont, NAME_MAX_LINES, createBarcode(barcode, BARCODE_FORMAT), best_before_date, purchased_date, amount, unit_name, ddFont)
+def image_route():
+    """Generate and return label image."""
+    logging.debug(f"Image endpoint: {request.method} {request.url}")
+    params = get_params()
+    img = _create_label(*params)
     
     buf = BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
-
+    
     logging.debug("Label image generated successfully")
     return Response(buf, 200, mimetype="image/png")
 
-def sendToPrinter(image : Image):
-    bql = BrotherQLRaster(PRINTER_MODEL)
-    bql.dpi_600 = True  # Enable high resolution mode
-
-    redLabel = label_spec.color == Color.BLACK_RED_WHITE
-
-    create_label(
-        bql,
-        image,
-        LABEL_SIZE,
-        red=redLabel
+def _create_label(name, barcode_text, best_before_date, purchased_date, amount, unit_name):
+    """Create label image with given parameters."""
+    barcode = create_barcode(barcode_text, Config.BARCODE_FORMAT)
+    return create_label_image(
+        label_spec.dots_total, name, nameFont, Config.NAME_MAX_LINES,
+        barcode, best_before_date, purchased_date, amount, unit_name, ddFont
     )
 
-    be = BACKEND_CLASS(PRINTER_PATH)
-    be.write(bql.data)
-    del be
+def sendToPrinter(image):
+    """Send image to Brother QL printer."""
+    bql = BrotherQLRaster(Config.PRINTER_MODEL)
+    bql.dpi_600 = Config.PRINTER_600DPI
+    
+    create_label(
+        bql, image, Config.LABEL_SIZE,
+        red=(label_spec.color == Color.BLACK_RED_WHITE)
+    )
+    
+    backend = BACKEND_CLASS(Config.PRINTER_PATH)
+    backend.write(bql.data)
+    backend.dispose() if hasattr(backend, 'dispose') else None
