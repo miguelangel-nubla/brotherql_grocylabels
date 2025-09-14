@@ -27,5 +27,5 @@ ENV PATH=/app/.venv/bin:$PATH
 
 COPY . .
 
-EXPOSE 8000
-CMD ["gunicorn", "--conf", "/app/gunicorn_conf.py", "--bind", "0.0.0.0:8000", "app:app"]
+EXPOSE 80
+CMD ["gunicorn", "--conf", "/app/gunicorn_conf.py", "--bind", "0.0.0.0:80", "app:app"]
