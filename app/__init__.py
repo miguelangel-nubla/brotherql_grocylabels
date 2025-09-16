@@ -1,6 +1,7 @@
 from io import BytesIO
 from os import path, getenv
 import logging
+import re
 from flask import Flask, Response, request
 from PIL import ImageFont
 from dotenv import load_dotenv
@@ -11,12 +12,53 @@ from app.imaging import create_barcode, create_label_image
 
 load_dotenv()
 
+def _get_pt_label_size(printer_path):
+    """Auto-detect PT printer label size from web interface."""
+    try:
+        # Extract IP from printer path (tcp://10.2.3.135 -> 10.2.3.135)
+        ip_match = re.search(r'tcp://([0-9.]+)', printer_path)
+        if not ip_match:
+            return None
+            
+        printer_ip = ip_match.group(1)
+        
+        from urllib.request import urlopen
+        from urllib.error import URLError
+        import socket
+        
+        url = f"http://{printer_ip}/general/status.html"
+        
+        # Set timeout for the request
+        with urlopen(url, timeout=5) as response:
+            html_content = response.read().decode('utf-8')
+        
+        # Extract media type from HTML
+        media_match = re.search(r'<dt>Media.*?Type</dt>\s*<dd>(\d+)mm', html_content, re.IGNORECASE | re.DOTALL)
+        
+        if media_match:
+            width_mm = int(media_match.group(1))
+            return f"pt{width_mm}"
+        
+        return None
+        
+    except (URLError, socket.timeout, ValueError, AttributeError):
+        return None
+
 class Config:
     """Application configuration."""
-    LABEL_SIZE = getenv("LABEL_SIZE", "62x29")
     PRINTER_MODEL = getenv("PRINTER_MODEL", "QL-500")
     PRINTER_PATH = getenv("PRINTER_PATH", "file:///dev/usb/lp1")
     PRINTER_600DPI = getenv("PRINTER_600DPI", "true").lower() == "true"
+    
+    # Auto-detect label size for PT printers, fallback to env var
+    _auto_label_size = None
+    if PRINTER_MODEL.startswith("PT-") and PRINTER_PATH.startswith("tcp://"):
+        _auto_label_size = _get_pt_label_size(PRINTER_PATH)
+    
+    # Use auto-detected size, then LABEL_SIZE env var, then fail
+    LABEL_SIZE = _auto_label_size or getenv("LABEL_SIZE")
+    if not LABEL_SIZE:
+        raise ValueError("Label size not detected and LABEL_SIZE environment variable not set")
     BARCODE_FORMAT = getenv("BARCODE_FORMAT", "Datamatrix")
     NAME_FONT = getenv("NAME_FONT", "NotoSerif-Regular.ttf")
     NAME_FONT_SIZE = int(getenv("NAME_FONT_SIZE", "48"))
