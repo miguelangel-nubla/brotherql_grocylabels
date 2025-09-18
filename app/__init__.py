@@ -152,7 +152,7 @@ def get_params():
         stock_entry = {}
     
     # Check for special case: stock_entry_userfields with StockEntryContainerWeight
-    stock_entry_userfields = stock_entry.get('stock_entry_userfields') or {}
+    stock_entry_userfields = source.get('stock_entry_userfields') or {}
     container_weight = stock_entry_userfields.get('StockEntryContainerWeight')
     
     # If StockEntryContainerWeight is a valid number, exclude amount and dates
