@@ -49,16 +49,7 @@ class Config:
     PRINTER_MODEL = getenv("PRINTER_MODEL", "QL-500")
     PRINTER_PATH = getenv("PRINTER_PATH", "file:///dev/usb/lp1")
     PRINTER_600DPI = getenv("PRINTER_600DPI", "true").lower() == "true"
-    
-    # Auto-detect label size for PT printers, fallback to env var
-    _auto_label_size = None
-    if PRINTER_MODEL.startswith("PT-") and PRINTER_PATH.startswith("tcp://"):
-        _auto_label_size = _get_pt_label_size(PRINTER_PATH)
-    
-    # Use auto-detected size, then LABEL_SIZE env var, then fail
-    LABEL_SIZE = _auto_label_size or getenv("LABEL_SIZE")
-    if not LABEL_SIZE:
-        raise ValueError("Label size not detected and LABEL_SIZE environment variable not set")
+    LABEL_SIZE = getenv("LABEL_SIZE")  # Optional fallback, can be None for PT printers
     BARCODE_FORMAT = getenv("BARCODE_FORMAT", "Datamatrix")
     NAME_FONT = getenv("NAME_FONT", "NotoSerif-Regular.ttf")
     NAME_FONT_SIZE = int(getenv("NAME_FONT_SIZE", "48"))
@@ -75,7 +66,27 @@ logging.basicConfig(
 # Initialize printer configuration
 selected_backend = guess_backend(Config.PRINTER_PATH)
 BACKEND_CLASS = backend_factory(selected_backend)['backend_class']
-label_spec = next(x for x in ALL_LABELS if x.identifier == Config.LABEL_SIZE)
+
+def _get_current_label_size_and_spec():
+    """Get current label size and spec, detecting PT printer size if needed."""
+    # For PT printers with TCP connection, auto-detect label size
+    if Config.PRINTER_MODEL.startswith("PT-") and Config.PRINTER_PATH.startswith("tcp://"):
+        detected_size = _get_pt_label_size(Config.PRINTER_PATH)
+        if detected_size:
+            label_size = detected_size
+        elif Config.LABEL_SIZE:
+            label_size = Config.LABEL_SIZE
+        else:
+            raise ValueError("PT printer label size could not be detected and LABEL_SIZE environment variable not set")
+    else:
+        # For non-PT printers, use environment variable
+        if not Config.LABEL_SIZE:
+            raise ValueError("LABEL_SIZE environment variable not set")
+        label_size = Config.LABEL_SIZE
+    
+    # Get label spec from size
+    label_spec = next(x for x in ALL_LABELS if x.identifier == label_size)
+    return label_size, label_spec
 
 # Load fonts
 thisDir = path.dirname(path.abspath(__file__))
@@ -93,7 +104,11 @@ def log_post_json_requests():
 
 @app.route("/")
 def home_route():
-    return "Label %s, %s"%(label_spec.identifier, label_spec.name)
+    try:
+        _, label_spec = _get_current_label_size_and_spec()
+        return "Label %s, %s"%(label_spec.identifier, label_spec.name)
+    except ValueError as e:
+        return f"Configuration error: {e}", 500
 
 def get_params():
     """Extract and validate parameters from request."""
@@ -188,6 +203,7 @@ def image_route():
 
 def _create_label(name, barcode_text, best_before_date, purchased_date, amount, unit_name):
     """Create label image with given parameters."""
+    _, label_spec = _get_current_label_size_and_spec()
     barcode = create_barcode(barcode_text, Config.BARCODE_FORMAT)
     return create_label_image(
         label_spec.dots_total, name, nameFont, Config.NAME_MAX_LINES,
@@ -196,11 +212,12 @@ def _create_label(name, barcode_text, best_before_date, purchased_date, amount, 
 
 def sendToPrinter(image):
     """Send image to Brother QL printer."""
+    label_size, label_spec = _get_current_label_size_and_spec()
     bql = BrotherQLRaster(Config.PRINTER_MODEL)
     bql.dpi_600 = Config.PRINTER_600DPI
     
     create_label(
-        bql, image, Config.LABEL_SIZE,
+        bql, image, label_size,
         red=(label_spec.color == Color.BLACK_RED_WHITE)
     )
     
