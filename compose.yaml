@@ -1,0 +1,10 @@
+services:
+  printer:
+    build: .
+    restart: unless-stopped
+    environment:
+      - PRINTER_PATH=tcp://10.0.0.1
+      - PRINTER_MODEL=PT-P750W
+      - PRINTER_600DPI=true
+    ports:
+      - 8000:80
