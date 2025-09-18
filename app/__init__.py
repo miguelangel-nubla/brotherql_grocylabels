@@ -2,6 +2,7 @@ from io import BytesIO
 from os import path, getenv
 import logging
 import re
+import urllib.parse
 from flask import Flask, Response, request
 from PIL import ImageFont
 from dotenv import load_dotenv
@@ -100,7 +101,23 @@ def log_post_json_requests():
     if request.method == "POST" and request.is_json:
         json_data = request.get_json()
         endpoint = request.endpoint or request.path
+        
+        # Create /image URL with same parameters for easy testing
+        if request.args:
+            # If there are GET parameters, use them
+            query_params = dict(request.args)
+        else:
+            # Convert JSON data to query parameters
+            query_params = {}
+            for key, value in json_data.items():
+                if isinstance(value, (str, int, float, bool)):
+                    query_params[key] = str(value)
+        
+        query_string = urllib.parse.urlencode(query_params)
+        image_url = f"{request.host_url}image?{query_string}"
+        
         logging.info(f"POST JSON Request to {endpoint} - Data: {json_data}")
+        logging.info(f"Debug /image URL: {image_url}")
 
 @app.route("/")
 def home_route():
