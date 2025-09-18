@@ -119,10 +119,23 @@ def get_params():
     if not isinstance(stock_entry, dict):
         stock_entry = {}
     
-    dates = {
-        'best_before_date': str(stock_entry.get('best_before_date', '')) if stock_entry.get('best_before_date') else '',
-        'purchased_date': str(stock_entry.get('purchased_date', '')) if stock_entry.get('purchased_date') else '',
-        'amount': str(stock_entry.get('amount', '')) if stock_entry.get('amount') else ''
+    # Check for special case: stock_entry_userfields with StockEntryContainerWeight
+    stock_entry_userfields = stock_entry.get('stock_entry_userfields') or {}
+    container_weight = stock_entry_userfields.get('StockEntryContainerWeight')
+    
+    # If StockEntryContainerWeight is a valid number, exclude amount and dates
+    exclude_amount_and_dates = False
+    if container_weight is not None:
+        try:
+            float(container_weight)
+            exclude_amount_and_dates = True
+        except (ValueError, TypeError):
+            pass
+    
+    label_fields = {
+        'best_before_date': '' if exclude_amount_and_dates else (str(stock_entry.get('best_before_date', '')) if stock_entry.get('best_before_date') else ''),
+        'purchased_date': '' if exclude_amount_and_dates else (str(stock_entry.get('purchased_date', '')) if stock_entry.get('purchased_date') else ''),
+        'amount': '' if exclude_amount_and_dates else (str(stock_entry.get('amount', '')) if stock_entry.get('amount') else '')
     }
     
     # Extract unit info
@@ -131,10 +144,10 @@ def get_params():
         else source.get('details', {}).get('quantity_unit_stock', {})
     )
     
-    unit_name = _get_unit_name(quantity_unit_stock, dates['amount'])
+    unit_name = _get_unit_name(quantity_unit_stock, label_fields['amount'])
     
-    logging.debug(f"Extracted - name: '{name}', barcode: '{barcode}', dates: {dates}, unit: '{unit_name}'")
-    return (name, barcode, dates['best_before_date'], dates['purchased_date'], dates['amount'], unit_name)
+    logging.debug(f"Extracted - name: '{name}', barcode: '{barcode}', label_fields: {label_fields}, unit: '{unit_name}'")
+    return (name, barcode, label_fields['best_before_date'], label_fields['purchased_date'], label_fields['amount'], unit_name)
 
 def _get_unit_name(quantity_unit_stock, amount):
     """Get appropriate unit name (singular/plural)."""
